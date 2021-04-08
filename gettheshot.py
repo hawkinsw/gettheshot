@@ -178,6 +178,8 @@ if __name__ == "__main__":
     results.write(json.dumps(array_results))
 
   # Now, upload the results to s3.
+  # NOTE: Remember that this will require local AWS credentials to work.
+  # Be sure to configure these credentials with `aws configure`.
   aws_client = boto3.client('s3')
   try:
     aws_client.upload_file('results.json', aws_bucket, aws_key)
