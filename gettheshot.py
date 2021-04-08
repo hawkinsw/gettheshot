@@ -4,6 +4,7 @@ import requests
 import json
 import csv
 import time
+import sys
 
 import boto3
 from boto3.exceptions import S3UploadFailedError
@@ -53,6 +54,7 @@ class AvailabilitySearch():
 
   def results(self) -> List[SearchResult]:
     debug: bool = False;
+
     url: str = "https://api.gettheshot.coronavirus.ohio.gov/public/locations/search"
     json_params = {"location":{"lat": self.lat, "lng": self.lng },"fromDate":"2021-04-07", "locationQuery":{"includePools":["default"]},"doseNumber":1,"url":"https://gettheshot.coronavirus.ohio.gov/location-select"}
     json_params['vaccineData'] = self.vaccineData
@@ -67,20 +69,24 @@ class AvailabilitySearch():
     # Debugging
     if debug:
       HTTPConnection.debuglevel = 1
-      logging.basicConfig() # you need to initialize logging, otherwise you will not see anything from requests
+      logging.basicConfig()
       logging.getLogger().setLevel(logging.DEBUG)
       requests_log = logging.getLogger("urllib3")
       requests_log.setLevel(logging.DEBUG)
       requests_log.propagate = True
 
-    response = requests.post(url, headers=headers, json=json_params)
-    parsed_response: dict = json.loads(response.content)
+    parsed_response: Optional[dict] = None
+    try:
+      response: Optional[Response] = None
+      response = requests.post(url, headers=headers, json=json_params)
+      parsed_response = json.loads(response.content)
+    except Exception as e: pass
 
-    if not 'locations' in parsed_response:
+    # Check for errors
+    if not parsed_response or not 'locations' in parsed_response:
+      print("Failed to search!")
       return []
 
-    locations = parsed_response['locations']
-    # TODO: Document (possibly rename)
     def api_output_to_search_result(location: dict) -> SearchResult:
       return SearchResult(location['name'],
         location['displayAddress'],
@@ -89,12 +95,13 @@ class AvailabilitySearch():
         None if not 'externalURL' in location else location['externalURL'],
       )
 
-    return [i for i in map(api_output_to_search_result, locations)]
+    return [i for i in map(api_output_to_search_result,
+                           parsed_response['locations'])]
 
 class VaccineData():
   def __init__(self) -> None:
     pass
-  def get(self) -> str:
+  def get(self) -> Optional[str]:
     url: str = "https://api.gettheshot.coronavirus.ohio.gov/public/eligibility"
     json_params: dict = {"eligibilityQuestionResponse":[{"id":"q.screening.booking.on.behalf","value":"No","type":"single-select"},{"id":"q.screening.firstname","type":"text"},{"id":"q.screening.lastname","type":"text"},{"id":"q.ineligible.registration.email","type":"email"},{"id":"q.screening.phonenumber","type":"mobile-phone"},{"id":"q.screening.relation","type":"single-select"},{"id":"q.screening.eligibility.question.1","value":"Yes","type":"single-select"},{"id":"q.screening.accessibility.code","type":"text"},{"id":"q.screening.initialconsent","value":["consent.initial.text"],"type":"multi-select"},{"id":"q.screening.acknowledge.vaccine","value":["acknowledgement.text"],"type":"multi-select"}],"url":"https://gettheshot.coronavirus.ohio.gov/screening"}
 
@@ -105,14 +112,17 @@ class VaccineData():
     headers['accept'] = accept
     headers['content-type'] = content_type
 
-    response = requests.post(url, headers=headers, json=json_params)
-    parsed_response = json.loads(response.content)
+    try:
+      response = requests.post(url, headers=headers, json=json_params)
+      parsed_response = json.loads(response.content)
 
-    vaccineData: str = ""
-    if parsed_response['vaccineData'] != None:
-      vaccineData = parsed_response['vaccineData']
+      vaccine_data: Optional[str] = None
+      if parsed_response['vaccineData'] != None:
+        vaccine_data = parsed_response['vaccineData']
 
-    return vaccineData
+      return vaccine_data
+    except Exception as e:
+      return None
 
 class ZipLatLng(TypedDict):
   zipcode: str
@@ -127,13 +137,17 @@ if __name__ == "__main__":
   aws_bucket: str = "vaccine-availability"
   aws_key:str = "gettheshot.json"
 
-  max_results_cutoff: Optional[int] = 25
+  max_results_cutoff: Optional[int] = None #25
   unique_results: Dict[str, dict] = {}
   locations: List[ZipLatLng] = []
   vd: VaccineData = VaccineData()
 
   # First, get a vaccineData value.
-  vaccineData: str = vd.get()
+  vaccineData: Optional[str] = vd.get()
+
+  if not vaccineData:
+    print("Oops: Could not get a valid vaccine data string.")
+    sys.exit(1)
 
   # Open the file with the zipcodes to scan.
   with open('zipcodes.csv', newline='') as zipcodes:
@@ -160,8 +174,6 @@ if __name__ == "__main__":
       # get a list of the locations with doses with no duplicates.
       unique_results[i.name] = toJSONSerializable(i)
 
-      print(repr(i))
-
     # If we are only supposed to generate a certain number of results,
     # stop when we hit that number.
     if max_results_cutoff and len(unique_results.keys()) > max_results_cutoff:
@@ -187,4 +199,4 @@ if __name__ == "__main__":
     print("Error uploading to s3: " + repr(e))
   else:
     print("Success uploading to s3.")
-
+  sys.exit(0)
